@@ -8,7 +8,7 @@ app.controller("main", function ($scope, $timeout) {
     $scope.currentSearchPage = 0;
     $scope.connected = false;
     $scope.search = { loading: false, results: null };
-    $scope.incognito = false;
+    $scope.piping = false;
     //socket emits
     socket.on('setKey', function (data) {
         var name = data.name;
@@ -128,9 +128,10 @@ app.controller("main", function ($scope, $timeout) {
     $scope.numKeys = function (obj) {
         return Object.keys(obj).length;
     }
-    $scope.toggleIncognito = function () {
-        $scope.incognito = !$scope.incognito;
-        socket.emit("toggleIncognito");
+    $scope.togglePiping = function () {
+        if (!$scope.status.logged) { return; }
+        $scope.piping = !$scope.piping;
+        socket.emit("togglePiping");
     }
     $scope.getProgress = function (page) {
         if (page.progress == 100 && page.cloudUploadProgress) {
@@ -198,7 +199,7 @@ app.controller("main", function ($scope, $timeout) {
         var name = prompt("Enter file name");
         socket.emit("uploadZipToCloud", { id: page.id, name: name });
     }
-    $scope.delete=function(page){
-        socket.emit("delete",{id:page.id,isTorrent:page.isTorrent});
+    $scope.delete = function (page) {
+        socket.emit("delete", { id: page.id, isTorrent: page.isTorrent });
     }
 });

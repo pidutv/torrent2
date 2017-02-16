@@ -29,7 +29,8 @@
 						'link':(!status || !status.logged),
 						'user':status
 					}"></i>
-				<i class="ui lock link circular icon" ng-click="toggleIncognito()" ng-class="{'inverted':incognito,'red':incognito}" title="Incognito"></i>
+				<i class="ui level up circular icon" ng-click="togglePiping()" ng-class="{'inverted':piping,'blue':piping,'link':status.logged,'disabled':!status.logged}"
+						title="Toggle Piping"></i>
 				<i class="ui lightning circular icon" ng-class="{'green':connected,'red':!connected}"></i>
 			</div>
 		</div>

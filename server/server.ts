@@ -26,7 +26,7 @@ const FILES_PATH = path.join(__dirname, '../files');
 const SPEED_TICK_TIME = 750;    //ms
 
 //Init
-var oauth2ClientArray = {};
+var sessionData = {};
 var capture = false;
 var app = express();
 var server = http.createServer(app);
@@ -36,8 +36,10 @@ var torrents = {};
 var torrentObjs = {};
 const CLOUD = GDrive;
 const filter = new Filter();
-var incognitoSessions = [];
 
+/**
+ *Calculates the percentage from given fraction, returns decimal
+ */
 function percentage(n): any {
     var p = (Math.round(n * 1000) / 10);
     return (p > 100) ? 100 : p;
@@ -62,7 +64,7 @@ function saveToDriveHandler(sessionID, data) {
     }
     var stream = FILE.createReadStream(path.join(FILES_PATH, '../', obj.path));
     var cloudInstance = new CLOUD();
-    var req = cloudInstance.uploadFile(stream, obj.length, obj.mime, data.name, oauth2ClientArray[sessionID], false);
+    var req = cloudInstance.uploadFile(stream, obj.length, obj.mime, data.name, sessionData[sessionID].oauth2Client, false);
     cloudInstance.on('progress', (data) => {
         if (visitedPages[obj.id]) {     //check if user deleted the file 
             visitedPages[obj.id].msg = "Uploaded " + percentage(data.uploaded / obj.length) + "%";
@@ -84,8 +86,8 @@ function saveToDriveHandler(sessionID, data) {
     });
 }
 /**
- *@params:  sessionID
-            data        {data:id}
+ *@param {sessionID}
+  @param {data} data data.id should be defined
  */
 function uploadDirToDrive(sessionID, data) {
     var id = data.id;
@@ -105,7 +107,7 @@ function uploadDirToDrive(sessionID, data) {
     }
     var dirSize = 0;
     var cloudInstance = new CLOUD();
-    cloudInstance.uploadDir(path.join(FILES_PATH, id), oauth2ClientArray[sessionID], false);
+    cloudInstance.uploadDir(path.join(FILES_PATH, id), sessionData[sessionID].oauth2Client, false);
     var uploaded = 0;
     cloudInstance.on("addSize", (data) => {
         dirSize = dirSize + data.size;
@@ -139,6 +141,7 @@ function clearVisitedPage(id) {
         if (visitedPages[id].progress == 100) {
             //  download completed but user requested to clear
             // delete downloaded file
+            if (visitedPages[id].isPiped) { return; }
             FILE.unlink(path.join(FILES_PATH, '../', visitedPages[id].path));
             delete visitedPages[id];
         } else {
@@ -148,7 +151,10 @@ function clearVisitedPage(id) {
         }
     }
 }
-
+/**
+ *Clears and deletes torrents
+ @param {id} id  The 'id' in 'torrents' object 
+ */
 function clearTorrent(id) {
     if (!torrents[id].pinned) {
         io.emit("deleteKey", {
@@ -171,12 +177,12 @@ function clearTorrent(id) {
     }
 }
 
-//TODO send pageVisited to its respective user using sessionID
 function middleware(data) {
     var sessionID = data.clientRequest.sessionID;
     var newFileName = null;
 
     if (filter.passed(data) && data.headers['content-length']) {
+        //check for duplicates
         var duplicates = Object.keys(visitedPages).filter((key) => {
             return visitedPages[key].url == data.url;
         });
@@ -184,25 +190,48 @@ function middleware(data) {
             return false;
         }
         debug("DL:%s from %s", data.contentType, data.url);
+        //giving a name to our new file
         var uniqid = shortid.generate();
         var totalLength = data.headers['content-length'];
         var downloadedLength = 0;
         newFileName = uniqid + '.' + mime.extension(data.contentType);
         var completeFilePath = path.join(FILES_PATH, newFileName);
+        var piping = false;
         //create /files if it doesn't exist 
         if (!FILE.existsSync(FILES_PATH)) {
             FILE.mkdirSync(FILES_PATH);
         }
-        FILE.closeSync(FILE.openSync(completeFilePath, 'w')); //create an empty file
-        var stream = FILE.createWriteStream(completeFilePath);
-        data.stream.pipe(stream);
+        //check whether pipe to file or 
+        if (Object.keys(sessionData[sessionID].oauth2Client.credentials).length > 0 && sessionData[sessionID].piping) {
+            piping = true;
+            var cloudInstance = new CLOUD();
+            cloudInstance.uploadFile(data.stream, totalLength, data.contentType, newFileName, sessionData[sessionID].oauth2Client);
+            cloudInstance.on("fileUploaded", data => {
+                if (data.error) {
+                    visitedPages[uniqid].msg = data.error;
+                } else {
+                    visitedPages[uniqid].msg = `Uploaded ${newFileName} to GDrive.`;
+                }
+                sendVisitedPagesUpdate(io, uniqid);
+            });
+            cloudInstance.on("progress", data => {
+                visitedPages[uniqid].msg = `Uploaded: ${percentage(data.uploaded / totalLength)} %`;
+                sendVisitedPagesUpdate(io, uniqid);
+            });
+        } else {
+            FILE.closeSync(FILE.openSync(completeFilePath, 'w')); //create an empty file
+            var stream = FILE.createWriteStream(completeFilePath);
+            data.stream.pipe(stream);
+        }
         data.stream.on('data', (chunk) => {
             downloadedLength += chunk.length;
             var progress = percentage((downloadedLength / totalLength));
             if (visitedPages[uniqid]) {
                 if (visitedPages[uniqid].cleared) { //download cancelled
-                    stream.close();
-                    FILE.unlink(completeFilePath);  //delete incomplete file
+                    if (stream) {        //download in not piped
+                        stream.close();
+                        FILE.unlink(completeFilePath);  //delete incomplete file
+                    }
                     delete visitedPages[uniqid];
                     io.emit('deleteKey', {
                         name: 'visitedPages',
@@ -254,6 +283,7 @@ function middleware(data) {
             pinned: false,
             progress: 0,
             length: data.headers['content-length'] * 1,
+            isPiped: piping,
             uploadTo: []        //holds list of session Ids to upload on dl complete
         };
         visitedPages[uniqid] = obj;
@@ -304,12 +334,11 @@ app.set("trust proxy", true);
 app.use(unblocker(middleware));
 app.use('/', express.static(path.join(__dirname, '../static')));
 app.use('/files', express.static(FILES_PATH));
-app.get('/', function (req, res) {
-    res.sendFile(path.join(__dirname, '../static', 'index.html'));
-});
+
 app.get('/oauthCallback', (req, res) => {
     var sessionID = req['sessionID'];
-    var oauth2Client = oauth2ClientArray[sessionID];
+    if (!sessionData[sessionID]) { res.send('Invalid Attempt[E00]'); return false; }
+    var oauth2Client = sessionData[sessionID].oauth2Client;
     if (!oauth2Client) { res.send('Invalid Attempt[E01]'); return false; }
     var code = req.query.code;
     if (code) {
@@ -328,21 +357,23 @@ app.get('/oauthCallback', (req, res) => {
 });
 // set up socket.io to use sessions
 io.use(function (socket, next) {
-    sessionMiddleware(socket.conn.request, socket.conn.request.res, next);
+    sessionMiddleware(socket.handshake, {}, next);
 });
 //handle socket.io connections
 io.on('connection', function (client) {
-    var sessionID = client.conn.request.sessionID;
-    if (!oauth2ClientArray[sessionID]) {    //init a new oauth client if not present
-        oauth2ClientArray[sessionID] = CLOUD.newOauthClient();
+    var sessionID = client.handshake.sessionID;
+    if (!sessionData[sessionID])
+        sessionData[sessionID] = { piping: false };    //init session
+    if (!sessionData[sessionID].oauth2Client) {    //init a new oauth client if not present
+        sessionData[sessionID].oauth2Client = CLOUD.newOauthClient();
     }
-    var consentPageUrl = CLOUD.getConsentPageURL(oauth2ClientArray[sessionID]);
+    var consentPageUrl = CLOUD.getConsentPageURL(sessionData[sessionID].oauth2Client);
     //Welcome new client
     client.emit('setObj', {
         name: 'status',
         value: {
             consentPageUrl: consentPageUrl,
-            logged: (Object.keys(oauth2ClientArray[sessionID].credentials).length > 0)
+            logged: (Object.keys(sessionData[sessionID].oauth2Client.credentials).length > 0)
         }
     });
     client.emit('setObj', {
@@ -352,6 +383,10 @@ io.on('connection', function (client) {
     client.emit('setObj', {
         name: 'torrents',
         value: torrents
+    });
+    client.emit('setObj', {
+        name: 'piping',
+        value: sessionData[sessionID].piping
     })
     client.on('clearVisitedPages', () => {
         Object.keys(visitedPages).forEach((id) => {
@@ -410,7 +445,7 @@ io.on('connection', function (client) {
         var uniqid = shortid();
         torrentObjs[uniqid] = new Torrent(data.magnet, FILES_PATH, uniqid);
         torrentObjs[uniqid].on("downloaded", (path) => {
-            //CLOUD.uploadDir(path, oauth2ClientArray[sessionID]);
+            //CLOUD.uploadDir(path, sessionData[sessionID].oauth2Client);
             torrents[uniqid].uploadTo.forEach(sessionId => {
                 uploadDirToDrive(sessionId, { id: uniqid });
             });
@@ -503,19 +538,15 @@ io.on('connection', function (client) {
             }
         });
     });
-    client.on("toggleIncognito", () => {
-        if (incognitoSessions.indexOf(sessionID) > -1) {
-            incognitoSessions.splice(incognitoSessions.indexOf(sessionID));
-        } else {
-            incognitoSessions.push(sessionID);
-        }
+    client.on("togglePiping", () => {
+        sessionData[sessionID].piping = !sessionData[sessionID].piping;
     });
     client.on("uploadZipToCloud", (data) => {
         var id = data.id;
         var name = data.name;
         var loc = path.join(FILES_PATH, id + ".zip");
         var cloudInstance = new CLOUD();
-        cloudInstance.uploadFile(FILE.createReadStream(loc), torrents[id].length, mime.lookup(loc), name, oauth2ClientArray[sessionID], false);
+        cloudInstance.uploadFile(FILE.createReadStream(loc), torrents[id].length, mime.lookup(loc), name, sessionData[sessionID].oauth2Client, false);
         cloudInstance.on("progress", (data) => {
             torrents[id].msg = "Uploading Zip: " + percentage(data.uploaded / data.size) + "%";
             torrents[id].zipping = true;
