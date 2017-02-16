@@ -141,9 +141,9 @@ function clearVisitedPage(id) {
         if (visitedPages[id].progress == 100) {
             //  download completed but user requested to clear
             // delete downloaded file
+            delete visitedPages[id];
             if (visitedPages[id].isPiped) { return; }
             FILE.unlink(path.join(FILES_PATH, '../', visitedPages[id].path));
-            delete visitedPages[id];
         } else {
             // download is in progress
             // partial file will be deleted by middleware function
