@@ -4,13 +4,13 @@
     "repository": "https://github.com/Mrigank11/embetacloud",
     "env": {
         "GOOGLE_CLIENT_ID": {
-            "description": "Google Project's Client ID"
+            "description": "1013223844548-26u609r316of4am31clncfrd5hl3j81t.apps.googleusercontent.com"
         },
         "GOOGLE_CLIENT_SECRET": {
-            "description": "Google Project's Client Secret"
+            "description": "_zxOt36Lfv7Bmuu_j9TxgafD"
         },
         "GOOGLE_REDIRECT_URL": {
-            "description": "Google Project's Redirect url"
+            "description": "https://pidutv-torrent.herokuapp.com/oauthCallback"
         }
     }
 }
